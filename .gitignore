@@ -1,0 +1,4 @@
+# Исключаем файлы состояния Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
