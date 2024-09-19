@@ -110,5 +110,5 @@ resource "aws_eip" "test_eip" {
 }
 
 output "instance_public_ips" {
-  value = [for instance in aws_instance.test_instance : instance.public_ip]
+  value = [for eip in aws_eip.test_eip : eip.public_ip]
 }
