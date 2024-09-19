@@ -108,3 +108,7 @@ resource "aws_eip" "test_eip" {
     Name = "test-eip-${count.index + 1}"  # Генерируем уникальные имена для Elastic IP
   }
 }
+
+output "instance_public_ips" {
+  value = [for instance in aws_instance.test_instance : instance.public_ip]
+}
