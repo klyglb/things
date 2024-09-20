@@ -112,3 +112,63 @@ resource "aws_eip" "test_eip" {
 output "instance_public_ips" {
   value = [for eip in aws_eip.test_eip : eip.public_ip]
 }
+
+# Создание S3 бакета для хранения состояния Terraform
+#resource "aws_s3_bucket" "test_terraform_state" {
+#  bucket = "test-terraform-state-bucket-my"  # Уникальное имя S3 бакета
+#
+ # Теги для удобства управления и идентификации
+#  tags = {
+#    Name        = "test-terraform-state-bucket-my"
+#    Environment = "test"
+#  }
+#}
+#
+# Настройка версионирования через отдельный ресурс
+#resource "aws_s3_bucket_versioning" "test" {
+#  bucket = aws_s3_bucket.test_terraform_state.bucket
+#
+#
+#  versioning_configuration {
+#    status = "Enabled"
+#  }
+#}
+#
+#resource "aws_s3_bucket_server_side_encryption_configuration" "test_sse" {
+# bucket = aws_s3_bucket.test_terraform_state.bucket
+#
+#  rule {
+#    apply_server_side_encryption_by_default {
+#      sse_algorithm = "AES256"
+#    }
+#  }
+#}
+#
+## Создание таблицы DynamoDB для блокировок
+#resource "aws_dynamodb_table" "test_terraform_locks" {
+#  name         = "test-terraform-locks"    # Имя таблицы для блокировок
+#  billing_mode = "PAY_PER_REQUEST"         # Оплата по мере запросов
+#  hash_key     = "LockID"                  # Основной ключ для хранения блокировок
+#
+#  attribute {
+#    name = "LockID"  # Ключ для идентификации блокировок
+#    type = "S"       # Тип данных для ключа (строка)
+#  }
+#
+#  # Теги для удобства управления ресурсами
+#  tags = {
+#    Name        = "test-terraform-locks"
+#    Environment = "test"
+#  }
+#}
+
+# Настройка backend для хранения состояния в S3 и блокировок через DynamoDB
+terraform {
+  backend "s3" {
+    bucket         = "test-terraform-state-bucket-my"  # Имя S3 бакета для хранения состояния
+    key            = "global/s3/test-terraform.tfstate"  # Путь в бакете для состояния
+    encrypt        = true                           # Шифрование файла состояния
+    dynamodb_table = "test-terraform-locks"         # DynamoDB для блокировок
+    region         = "eu-central-1"
+  }
+}
