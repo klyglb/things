@@ -36,6 +36,7 @@
         line: 'SELINUX=disabled'
       notify:
         - Перезагрузить систему для отключения SELinux
+      when: ansible_facts.selinux.status == "enabled"
 
     # Загрузка модуля br_netfilter
     - name: Загрузить модуль br_netfilter
