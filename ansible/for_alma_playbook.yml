@@ -1,0 +1,185 @@
+# ansible/playbook.yml
+
+---
+- name: Настройка виртуальных машин перед развертыванием Kubernetes
+  hosts: all
+  become: true
+  tasks:
+    - name: Отключить swap
+      shell: |
+        swapoff -a
+        sed -i '/ swap / s/^/#/' /etc/fstab
+
+    - name: Остановить и отключить firewalld
+      systemd:
+        name: firewalld
+        state: stopped
+        enabled: false
+
+    - name: Проверить статус iptables
+      shell: |
+        iptables -L -n
+        iptables -t nat -L -n
+        iptables -t mangle -L -n
+        iptables -t raw -L -n
+
+    - name: Отключить SELinux во время выполнения
+      command: setenforce 0
+      when: ansible_facts.selinux.status == "enabled"
+
+    - name: Отключить SELinux постоянно
+      replace:
+        path: /etc/selinux/config
+        regexp: '^SELINUX=enforcing'
+        replace: 'SELINUX=permissive'
+
+    - name: Загрузить модуль br_netfilter
+      modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Обеспечить загрузку br_netfilter при старте системы
+      copy:
+        dest: /etc/modules-load.d/modules-kubernetes.conf
+        content: |
+          br_netfilter
+
+    - name: Настроить параметры sysctl
+      blockinfile:
+        path: /etc/sysctl.conf
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+        block: |
+          net.ipv4.ip_forward=1
+          net.bridge.bridge-nf-call-iptables=1
+          net.ipv4.ip_nonlocal_bind=1
+          net.bridge.bridge-nf-call-ip6tables=1
+
+    - name: Применить изменения sysctl
+      command: sysctl -p
+
+    - name: Добавить репозиторий Kubernetes
+      yum_repository:
+        name: kubernetes
+        description: Kubernetes
+        baseurl: https://pkgs.k8s.io/core:/stable:/v1.30/rpm/
+        enabled: yes
+        gpgcheck: yes
+        repo_gpgcheck: yes
+        gpgkey: https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
+
+    - name: Добавить репозиторий Docker CE
+      get_url:
+        url: https://download.docker.com/linux/centos/docker-ce.repo
+        dest: /etc/yum.repos.d/docker-ce.repo
+
+    - name: Установить containerd
+      yum:
+        name: containerd.io
+        state: present
+
+    - name: Установить дополнительные пакеты
+      yum:
+        name:
+          - bash-completion
+          - python3
+          - tar
+          - nfs-utils
+          - chrony
+          - mc
+          - vim
+          - git
+          - rsyslog
+          - jq
+        state: present
+
+    - name: Включить и запустить chronyd
+      systemd:
+        name: chronyd
+        state: started
+        enabled: true
+
+    - name: Включить и запустить rsyslog
+      systemd:
+        name: rsyslog
+        state: started
+        enabled: true
+
+    - name: Создать конфигурационный файл containerd
+      command: |
+        containerd config default | tee /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Закомментировать строку disabled_plugins = ["cri"]
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: '^disabled_plugins = \["cri"\]'
+        replace: '# disabled_plugins = ["cri"]'
+
+    - name: Добавить настройки в containerd
+      blockinfile:
+        path: /etc/containerd/config.toml
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+        block: |
+          [plugins."io.containerd.grpc.v1.cri"]
+            sandbox_image = "registry.k8s.io/pause:3.9"
+            [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+              SystemdCgroup = true
+
+    - name: Перезапустить containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+
+    - name: Установить kubelet, kubeadm и kubectl
+      yum:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+
+    - name: Включить и запустить kubelet
+      systemd:
+        name: kubelet
+        state: started
+        enabled: true
+
+- name: Инициализация мастер-ноды Kubernetes
+  hosts: master
+  become: true
+  tasks:
+    - name: Инициализировать кластер Kubernetes
+      command: kubeadm init --pod-network-cidr=10.244.0.0/16
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_init
+
+    - name: Настроить kubectl для пользователя root
+      command: |
+        mkdir -p /root/.kube
+        cp -i /etc/kubernetes/admin.conf /root/.kube/config
+      when: kubeadm_init.changed
+
+    - name: Установить сетевой плагин Flannel
+      command: kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+      when: kubeadm_init.changed
+
+    - name: Получить команду для подключения воркер-нод
+      command: kubeadm token create --print-join-command
+      register: join_command
+      when: kubeadm_init.changed
+
+    - name: Сохранить команду присоединения воркер-нод
+      set_fact:
+        join_command: "{{ join_command.stdout }}"
+
+- name: Присоединение воркер-нод к кластеру
+  hosts: workers
+  become: true
+  tasks:
+    - name: Присоединить воркер-ноды к кластеру
+      command: "{{ hostvars['master'].join_command }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf

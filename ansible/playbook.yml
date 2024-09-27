@@ -1,0 +1,98 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+
+    # Отключение swap временно и удаление его из /etc/fstab для постоянного отключения
+    - name: Отключить swap временно
+      command: swapoff -a
+
+    - name: Убедиться, что swap отключен при перезагрузке
+      replace:
+        path: /etc/fstab
+        regexp: '^(.*\s+swap\s+.*)$'
+        replace: '#\1'
+
+    # Остановка и отключение firewalld (если установлен)
+    - name: Остановить firewalld, если установлен
+      systemd:
+        name: firewalld
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+      when: ansible_facts.services['firewalld'] is defined
+
+    # Отключение SELinux временно, если включен
+    - name: Отключить SELinux временно, если включен
+      command: setenforce 0
+      ignore_errors: yes
+      when: ansible_facts.selinux.status == "enabled"
+
+    # Отключение SELinux в конфигурации для постоянного отключения
+    - name: Отключить SELinux в конфигурации
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: 'SELINUX=disabled'
+      notify:
+        - Перезагрузить систему для отключения SELinux
+
+    # Загрузка модуля br_netfilter
+    - name: Загрузить модуль br_netfilter
+      modprobe:
+        name: br_netfilter
+        state: present
+
+    # Настройка параметров сети
+    - name: Включить IPv4 forwarding и настройки iptables для Kubernetes
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: yes
+        state: present
+        reload: yes
+      loop:
+        - { key: 'net.ipv4.ip_forward', value: '1' }
+        - { key: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { key: 'net.ipv4.ip_nonlocal_bind', value: '1' }
+
+    # Установка полезных утилит
+    - name: Установить bash-completion, python3, tar, nfs-utils, mc, vim, git, rsyslog, jq
+      apt:
+        name:
+          - bash-completion
+          - python3
+          - tar
+          - nfs-common
+          - mc
+          - vim
+          - git
+          - rsyslog
+          - jq
+        state: present
+
+    # Настройка chrony для синхронизации времени
+    - name: Установить и активировать chrony
+      apt:
+        name: chrony
+        state: present
+
+    - name: Включить chronyd
+      systemd:
+        name: chronyd
+        enabled: yes
+        state: started
+
+    # Включение rsyslog
+    - name: Включить rsyslog
+      systemd:
+        name: rsyslog
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: Перезагрузить систему для отключения SELinux
+      reboot:
+        msg: "Перезагрузка для применения отключения SELinux"
+        pre_reboot_delay: 5
